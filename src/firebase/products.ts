@@ -5,83 +5,162 @@ import {
 } from 'firebase/firestore';
 import { db } from './config';
 import { Product, FilterState } from '../types';
+import { DEMO_PRODUCTS } from '../data/demoProducts';
+
+let useDemo = true;
+
+const withTimeout = <T>(promise: Promise<T>, ms = 5000): Promise<T> => {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => setTimeout(() => reject(new Error('timeout')), ms)),
+  ]);
+};
+
+const filterDemoProducts = (filters?: Partial<FilterState>) => {
+  let results = DEMO_PRODUCTS.filter(p => p.isActive);
+  if (filters?.category && filters.category !== 'all') {
+    results = results.filter(p => p.category === filters.category);
+  }
+  if (filters?.search) {
+    const q = filters.search.toLowerCase();
+    results = results.filter(p => p.name.toLowerCase().includes(q) || p.description.toLowerCase().includes(q));
+  }
+  if (filters?.sort === 'price_asc') results.sort((a, b) => a.price - b.price);
+  else if (filters?.sort === 'price_desc') results.sort((a, b) => b.price - a.price);
+  else if (filters?.sort === 'popular') results.sort((a, b) => b.reviewCount - a.reviewCount);
+  else if (filters?.sort === 'rating') results.sort((a, b) => b.rating - a.rating);
+  return results;
+};
 
 const COLLECTION = 'products';
 
 export const getProducts = async (filters?: Partial<FilterState>, lastDoc?: DocumentSnapshot, pageSize = 12) => {
-  const constraints: QueryConstraint[] = [];
-
-  if (filters?.category && filters.category !== 'all') {
-    constraints.push(where('category', '==', filters.category));
+  if (useDemo) {
+    const all = filterDemoProducts(filters);
+    return { products: all.slice(0, pageSize), lastDoc: undefined, hasMore: all.length > pageSize };
   }
-  if (filters?.search) {
-    constraints.push(where('name', '>=', filters.search));
-    constraints.push(where('name', '<=', filters.search + '\uf8ff'));
+  try {
+    const constraints: QueryConstraint[] = [];
+
+    if (filters?.category && filters.category !== 'all') {
+      constraints.push(where('category', '==', filters.category));
+    }
+    if (filters?.search) {
+      constraints.push(where('name', '>=', filters.search));
+      constraints.push(where('name', '<=', filters.search + '\uf8ff'));
+    }
+
+    constraints.push(where('isActive', '==', true));
+
+    const sortField = filters?.sort === 'price_asc' || filters?.sort === 'price_desc' ? 'price' :
+      filters?.sort === 'popular' ? 'reviewCount' :
+      filters?.sort === 'rating' ? 'rating' : 'createdAt';
+    const sortDir = filters?.sort === 'price_asc' ? 'asc' : 'desc';
+
+    constraints.push(orderBy(sortField, sortDir));
+    constraints.push(limit(pageSize));
+
+    if (lastDoc) constraints.push(startAfter(lastDoc));
+
+    const q = query(collection(db, COLLECTION), ...constraints);
+    const snap = await withTimeout(getDocs(q));
+
+    return {
+      products: snap.docs.map((d) => ({ id: d.id, ...d.data() } as Product)),
+      lastDoc: snap.docs[snap.docs.length - 1],
+      hasMore: snap.docs.length === pageSize,
+    };
+  } catch (err: any) {
+    console.warn('[Firebase] getProducts failed, using demo data:', err?.code || err?.message);
+    useDemo = true;
+    const all = filterDemoProducts(filters);
+    return { products: all.slice(0, pageSize), lastDoc: undefined, hasMore: all.length > pageSize };
   }
-
-  constraints.push(where('isActive', '==', true));
-
-  const sortField = filters?.sort === 'price_asc' || filters?.sort === 'price_desc' ? 'price' :
-    filters?.sort === 'popular' ? 'reviewCount' :
-    filters?.sort === 'rating' ? 'rating' : 'createdAt';
-  const sortDir = filters?.sort === 'price_asc' ? 'asc' : 'desc';
-
-  constraints.push(orderBy(sortField, sortDir));
-  constraints.push(limit(pageSize));
-
-  if (lastDoc) constraints.push(startAfter(lastDoc));
-
-  const q = query(collection(db, COLLECTION), ...constraints);
-  const snap = await getDocs(q);
-
-  return {
-    products: snap.docs.map((d) => ({ id: d.id, ...d.data() } as Product)),
-    lastDoc: snap.docs[snap.docs.length - 1],
-    hasMore: snap.docs.length === pageSize,
-  };
 };
 
 export const getProductById = async (id: string): Promise<Product | null> => {
-  const snap = await getDoc(doc(db, COLLECTION, id));
-  if (!snap.exists()) return null;
-  return { id: snap.id, ...snap.data() } as Product;
+  if (useDemo || id.startsWith('demo-')) {
+    return DEMO_PRODUCTS.find(p => p.id === id) || null;
+  }
+  try {
+    const snap = await getDoc(doc(db, COLLECTION, id));
+    if (!snap.exists()) return null;
+    return { id: snap.id, ...snap.data() } as Product;
+  } catch {
+    return DEMO_PRODUCTS.find(p => p.id === id) || null;
+  }
 };
 
 export const getFeaturedProducts = async (count = 8): Promise<Product[]> => {
-  const q = query(
-    collection(db, COLLECTION),
-    where('isActive', '==', true),
-    where('featured', '==', true),
-    orderBy('createdAt', 'desc'),
-    limit(count)
-  );
-  const snap = await getDocs(q);
-  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as Product));
+  if (useDemo) {
+    return DEMO_PRODUCTS.filter(p => p.isActive && p.featured).slice(0, count);
+  }
+  try {
+    const q = query(
+      collection(db, COLLECTION),
+      where('isActive', '==', true),
+      where('featured', '==', true),
+      orderBy('createdAt', 'desc'),
+      limit(count)
+    );
+    const snap = await withTimeout(getDocs(q));
+    const results = snap.docs.map((d) => ({ id: d.id, ...d.data() } as Product));
+    if (results.length === 0) {
+      useDemo = true;
+      return DEMO_PRODUCTS.filter(p => p.isActive && p.featured).slice(0, count);
+    }
+    return results;
+  } catch (err: any) {
+    console.warn('[Firebase] getFeaturedProducts failed, using demo data:', err?.code || err?.message);
+    useDemo = true;
+    return DEMO_PRODUCTS.filter(p => p.isActive && p.featured).slice(0, count);
+  }
 };
 
 export const getPopularProducts = async (count = 8): Promise<Product[]> => {
-  const q = query(
-    collection(db, COLLECTION),
-    where('isActive', '==', true),
-    orderBy('reviewCount', 'desc'),
-    limit(count)
-  );
-  const snap = await getDocs(q);
-  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as Product));
+  if (useDemo) {
+    return [...DEMO_PRODUCTS].sort((a, b) => b.reviewCount - a.reviewCount).slice(0, count);
+  }
+  try {
+    const q = query(
+      collection(db, COLLECTION),
+      where('isActive', '==', true),
+      orderBy('reviewCount', 'desc'),
+      limit(count)
+    );
+    const snap = await withTimeout(getDocs(q));
+    const results = snap.docs.map((d) => ({ id: d.id, ...d.data() } as Product));
+    if (results.length === 0) {
+      useDemo = true;
+      return [...DEMO_PRODUCTS].sort((a, b) => b.reviewCount - a.reviewCount).slice(0, count);
+    }
+    return results;
+  } catch (err: any) {
+    console.warn('[Firebase] getPopularProducts failed, using demo data:', err?.code || err?.message);
+    useDemo = true;
+    return [...DEMO_PRODUCTS].sort((a, b) => b.reviewCount - a.reviewCount).slice(0, count);
+  }
 };
 
 export const getSimilarProducts = async (category: string, excludeId: string, count = 4): Promise<Product[]> => {
-  const q = query(
-    collection(db, COLLECTION),
-    where('category', '==', category),
-    where('isActive', '==', true),
-    limit(count + 1)
-  );
-  const snap = await getDocs(q);
-  return snap.docs
-    .map((d) => ({ id: d.id, ...d.data() } as Product))
-    .filter((p) => p.id !== excludeId)
-    .slice(0, count);
+  if (useDemo) {
+    return DEMO_PRODUCTS.filter(p => p.category === category && p.id !== excludeId && p.isActive).slice(0, count);
+  }
+  try {
+    const q = query(
+      collection(db, COLLECTION),
+      where('category', '==', category),
+      where('isActive', '==', true),
+      limit(count + 1)
+    );
+    const snap = await getDocs(q);
+    return snap.docs
+      .map((d) => ({ id: d.id, ...d.data() } as Product))
+      .filter((p) => p.id !== excludeId)
+      .slice(0, count);
+  } catch {
+    return DEMO_PRODUCTS.filter(p => p.category === category && p.id !== excludeId && p.isActive).slice(0, count);
+  }
 };
 
 export const createProduct = async (product: Omit<Product, 'id' | 'createdAt' | 'updatedAt'>): Promise<string> => {

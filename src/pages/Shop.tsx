@@ -41,8 +41,11 @@ export default function Shop() {
     search: searchParams.get('search') || '',
   });
 
+  const [error, setError] = useState<string | null>(null);
+
   const loadProducts = useCallback(async (reset = true) => {
     setLoading(true);
+    setError(null);
     try {
       const result = await getProducts(
         {
@@ -55,8 +58,9 @@ export default function Shop() {
       setProducts(reset ? result.products : (prev) => [...prev, ...result.products]);
       setLastDoc(result.lastDoc);
       setHasMore(result.hasMore);
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
+      setError(err?.message || 'Erreur de chargement');
     } finally {
       setLoading(false);
     }
@@ -208,6 +212,24 @@ export default function Shop() {
                 <button onClick={() => updateFilter('category', 'all')}><X size={12} /></button>
               </span>
             )}
+          </div>
+        )}
+
+        {/* Firestore error */}
+        {error && (
+          <div className="mb-6 bg-red-900/20 border border-red-500/30 rounded-2xl p-5">
+            <h3 className="text-red-400 font-semibold mb-1">Erreur de connexion Firebase</h3>
+            <p className="text-red-300/70 text-sm mb-3">{error}</p>
+            {error.includes('index') || error.includes('Index') ? (
+              <p className="text-xs text-gray-500">Un index Firestore manque. Cliquez sur le lien dans la console du navigateur pour le créer automatiquement sur Firebase.</p>
+            ) : error.includes('permission') || error.includes('Permission') ? (
+              <div className="text-xs text-gray-400 space-y-1">
+                <p className="font-semibold text-gray-300">Configurez les règles Firestore :</p>
+                <p>1. Allez sur <span className="text-[#C9A84C]">console.firebase.google.com</span></p>
+                <p>2. Firestore Database → Règles</p>
+                <p>3. Copiez le contenu du fichier <span className="text-[#C9A84C]">firestore.rules</span> et publiez</p>
+              </div>
+            ) : null}
           </div>
         )}
 
